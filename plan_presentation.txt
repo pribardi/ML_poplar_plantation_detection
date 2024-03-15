@@ -1,0 +1,145 @@
+############## Projet Classification des peupleraies et évaluation des performances de la SR partant de 10 à 5m de résolution ##############
+
+I - Introduction
+- Contexte 
+	- Labos de l'Ensat, traitement d'images satellites pour l'agriculture, objectif : surveiller la croissance des peupliers au sein des parcelles de peupleraies, par images satellites, pour la gestion des ressources forestières, estimation de la biomasse ou du carbone, suivi de l'utilisation des terres, de la biodiversité => donc faut les détecter ==> Youssra a fait sa thèse, meilleur indice pour détecter : pi2, problème : certains peupliers non détectables car trop jeunes (5-7 ans), solution : Super Résolution, images sentinelles 10m de résolution (avec certaines bandes réduites de 20 à 10m par échantillonnages + gap fillers (nuages)) => images 5m de résolution, classificateurs RF qu'on crée pour les données sans SR et avec SR, observer ou non amélioration de la détection, analyse des résultats, essayer de mettre en avant l'influence de l'âge des peupliers et des cultivars, etc.
+- Objectifs : 
+	- Etat de l'art des modèles de SR
+	- Prendre en main le modèle de SR préentraîné par le labo
+	- Effectuer la Super Résolution des images
+	- Prétraitement/Analyse des données (QGIS, nettoyage, équilibrage, réduction de dimension (pca), visualisation des pi2(expliquer l'écart au milieu qui rend le pi2 intéressant))
+	- Entraîner un Random Forest sur les données sans SR puis avec SR
+	- Améliorer les modèles en optimisant les paramètres des modèles 
+	- Comparer les performances du modèle RF sans SR et avec SR
+	- Analyser l'influence de certaines caractéristiques des peupliers (âge, cultivars, taille, vitesse de croissance, vitesse juvénile...)
+	- Proposer des améliorations
+- Données à disposition :
+	- Images pi2 2018 sur 4 tuiles (localisation différente cf. diapo presentation)
+		- environ 24Go/image ==> 96 Go
+	- Shapefiles des vérité de terrain des 4 tuiles
+		- quelques Mo
+	- Images multi-spectrales des 4 tuiles, 360 bandes par tuile pour 10 bandes * 36 dates de 2018
+		- environ 60Go/image ==> 240 Go 
+	- QGIS 
+	- IDE Python (Google Colab, Visual Studio Code)
+- Ressources de calcul à disposition :
+	- Ordinateurs portables individuels
+	- PC fixe i7-14eme génération 32 Go RAM avec GPU
+	- (Ne pas mentionner le fait qu'on a pas pu faire la SR sur nos pcs à ce moment là sinon on va se répéter plus tard et on évite une impression négative on va dire)
+
+II - Recherche bibliographique
+	- Tout d'abord : Images multi-spectrales, très grandes, pi2 => combi. linéaire des bandes B5 (IR) (705nm), B11(1610nm) et B12(2190nm) (Infra Rouge Moyen), cf papier de Youssra (https://www.mdpi.com/2072-4292/14/16/3975). => on a besoin de faire la SR de 3 bandes pour chaque date, pour chaque tuile
+	- Plusieurs SR existent : MISR (Multi Image Super resolution)(plusieurs photos d'un même endroit à des périodes différentes), SISR( Single Image Super Resolution), Pan Sharpening (img monobande super res + img multisbandes basse res = multibandes super res) => SISR imposé par le sujet car info temporelle importante (pi2 dépend de la date)
+	- Plusieurs architectures de modèles : réseaux de neurones type CNN, GAN, transformers,... 
+	- Mais tous le même type de donnée en entrée : une image basse rés (10m) et un ground truth (5m) issue généralement d'un autre satellite. 
+	- Dataset SEN2VENµS : SEN2 10m de res et VENµS 5m de res par l'INRAE
+	- MAIS, gros problème ==> le dataset ne comprend pas B11 et B12 (moyen infra rouge), idem bcp de modèles SR sur github pour les bandes du visibles et IR, mais presqu'aucun pour les bandes IR moyens (B11 et B12) ==> Aucune image proche spectralement de B11 et B12 dispos gratuitement sur internet, ou alors nécessite des démarches de plusieurs semaines pour obtenir ces images. ==> Solution : (en soi imposé) ESRGAN de Julien Michel (https://framagit.org/jmichel-otb/sentinel2_superresolution/-/tree/master?ref_type=heads)
+	=> un modèle très populaire pour le remote sensing : ESRGAN 
+		- Expliquer briévement comment il marche, l'architecture en général, entrée/sortie, facteur d'agrandissement, données entraînés (ici images satellites plans d’eau), 10m vers 5m, comment ? protocole de Wald : réduction de la qualité des images de 20m vers 40m (https://hal.science/hal-04218629). Entrainement du modèle pour passer de 40m à 20m pour B11 et B12 puis utiliser cette capacité à agrandir x2 pour faire passer de 10m à 5m. 
+	- Autre problème : problème d'installation du répo github pour utiliser le modèle, scripts manquants, le répo était toujours en édition assez fréquemment. De plus, difficulté matérielle pour faire tourner le modèle de SR pré-entraîné avec les images de 60Go même découpés en patch (récupérer une image du patch prenait 1h sur un ordi portable), très chronopages, Youssra a utilisé le cluster du CNES pour effectuer la SR, chronopages aussi. ==> en attendant, développement du modèle RF pour la classification. 
+
+ III - Traitement des données pour la classification
+
+- L'objectif : entraîner un modèle RF avec 3 tuiles d'entrainement (T30TYT, T31TCJ, T31UEQ) + 1 tuile de test (T30TYQ)
+a) QGIS + Mapla
+	- 4 shapefiles avec vérité de terrain des 4 tuiles :
+		- Nettoyage : retirer des valeurs de GT en dehors de l'emprise des tuiles
+		- PolygonClassStatistics, Sample Selection (randomizer + équilibrage des classes), Sample Extraction 
+		- QGIS: fusion des 3 shapefiles de train => conversion fichier .csv <= On a ici les 36 dates en features et la classe des pixels (variétés d'arbres : 7 classes: 1,2,3,4,5,6,8), infos sur les cultivars et les années de plantations.
+		- idem pour test set
+b) IDE Python (notebook jupyter)
+	- preprocessing : 
+		- random seed = 7
+		- retrait des no datas
+		- Deux choix : Entrainer le modèle sur toutes les classes puis ramener les résultats à peupliers/non peupliers ou faire une classif binaire dès le début
+			- On a testé les deux, la classif binaire était largement mieux, on montrera les résultats plus tard
+		==> On part sur la classif binaire => tous les non peupliers dans la classe 0 et peupliers classe 1, au vue des données on rééquilibre les classes par réduction. 
+	- Tracé des pi2 médians et les interquartiles des peupliers et non peupliers de la série de donnée d'entrainement
+	- Tracé des pi2 médians et les interquartiles des peupliers et non peupliers par tuile x4
+		- Expliquer qu'au milieu il y a un portione où le pi2 est plus distinct entre les deux classes, ce sont les dates sur cet intervalle qui sont potentiellement les plus influents sur les performances du modèle (période pritemps/automne). Mais selon les tuiles, la sépration n'est pas toujours évidente, notamment la tuile 4, tuile de test.
+	- Autre preprocessing : 
+		- PCA : puisqu'on a l'intuition que certaines features semblent avoir plus d'importance que d'autres, on cherche à faire des combinaisons linéaires de ces features en projetant les données par une PCA. On observe les résultats pour plusieurs composantes principales gardées pour déterminer le nombre de compo principales idéal.
+		- SFFS (2017) : Sequential Forward Feature Selection : méthode séquentielle pour déterminer les features les plus influentes dans l'optimisation du'n critère défini (accuracy, recall,...). Ici, on a repris la sélection effectuée par le labo sur la série de 2017 qui est très proche de notre série. 5 dates avaient été gardées et du fait que la Super résolution réalisée par le labo nécessitait l'utilisation du cluster du CNES en respectant des contraintes de temps, Youssra nous a réalisé la SR de ces 5 dates retenues. Ainsi, pour comparer les résultats sans SR et avec SR, on se sert seulement de ces 5 dates définies par la SFFS de 2017. 
+		- SFFS (2018) : en voulant bien faire les choses, nous avons aussi effectué la SFFS sur notre jeu de données. Nous l'avons effectué selon deux critères différents : accuracy puis recall. Sachant que la SFFS de 2017 avait été fait selon le recall. On a décidé de garder les 5 dates les plus influentes. (résultats pour après : Seule 1 date parmi 5 étaient en commun avec les dates de 2017. Néanmoins, les résultats d'entrainement d'un RF sur chaque données SFFS ont donné des accuracy proches à 1% près. 
+		- PCA sur les données SFFS : on a expérimenté la PCA sur les données SFFS
+
+III - Entrainement des modèles
+
+a) Code :
+	- On a effectué une cross validation 10 fold soit 90% train et 10% validation puis évalué l'accuracy sur le testset
+	- idem sans SR et avec SR
+	- Montrer briévement le code de la cross validation 10 fold
+		- boucle 10fold
+		- retrain du meilleur modèle sur l'ensemble du trainset
+		- calcul accuracy sur testset
+		- Matrice de confusion 
+		- precision, recall, f1-score
+	- Pour la PCA et SFFS c'est pareil 
+
+b) RandomizedSearchCV :
+	- Optimisation des hyperparamètres du randomforest : max_features, n_estimators, max_depth, par cross validation 10fold sur chaque combinaison des hyperparamètres.
+	- Intervalles choisies dans le papier de Youssra
+	- 40 itérations 
+	- Effectué sur les données SFFS basée 2017
+
+IV - Résultats 
+
+- 1) Sans SR
+	- multi-classes classif vs classif binaire : matrice de confusion + classif report ==> biclasses meilleur
+	- sur une même slide : même modèle pour tous (modèle par défaut : n_estimators=100), matrice de confusion + classification report de RF sur : 
+		- 36 dates brutes
+		- 5 dates SFFS 2017 brutes
+		- 5 dates SFFS 2018 brutes 
+		- Note : préciser param du modèle
+	- même slide : idem + compo2 = fct(compo1) 
+		- 36 dates PCA
+		- 5 dates SFFS 2017 PCA
+		- 5 dates SFFS 2018 PCA
+		- Note : préciser param du modèle
+	- Modèle avec hyperparamètres optimisés
+		- Meilleur modèle : RandomForestClassifier(max_depth=45, max_features=17, n_estimators=125, random_state=7), accuracy = 95.64% sur SFFS 2017 brutes
+			==> peu d'amélioration finalement car accuracy sur la validation déjà élevée
+		- SFFS 2017 brutes
+		- SFFS 2017 PCA
+- 2) Avec SR
+	- 5 dates SFFS 2017 brutes avec modèle optimal
+	- 5 dates SFFS 2017 PCA 
+- 3) Comparaison
+	- résultats sans SR vs SR : pas d'amélioration avec la SR, on perd quelques pourcents sur l'accuracy. 
+		==> SR ver 5m pas suffisant pour détecter les peupliers jeunes (5-7ans), il faudrait augmenter davantage la SR, ou alors essayer avec d'autres modèles. 
+
+	- Mais concrétement, quels peupleraies avons-nous du mal à détecter ? 
+		- comparaison accuracy + proba d'appartenance, par âge de peupleraies sans SR et SR => augmentent plus c'est vieux avec grosse augmentation (80% accuracy) pour peupliers de 4 ans. 
+			- montrer les courbes de la hauteur, le volume et la biomasse des peupliers en fonction de l'âge
+			==> dire à partir de quelle hateur/volume/biomasse on détecte bien les peupliers
+		- comparaison accuracy + proba d'appartenance, par cultivar de peupleraies sans SR et SR
+			- croissance juvénile + vitesse de croissance en fct du cultivar ==> on s'attend à si croissance juvénile et vitesse de croissance rapides alors accuracy plus élevée que pour croissance juvénile lente et une vitesse de croissance moyenne.
+		- comparaison accuracy = fct(age, cultivar) sans SR et SR et proba d'appartenance = fct(age, cultivar), sans SR et SR
+
+V - Conclusion
+	- Prétraitement des données : SFFS 2018 donne les meilleurs résultats, puis les 36 dates brutes, et la SFFS 2017 ensuite. La PCA n'a pas très bien fonctionné finalement. L'optimisation des hyperparamètres n'a pas apporté une grande amélioration par rapport au modèle par défaut, de l'ordre de 1%.
+	- Classification Random Forest performante mais pas parfaite car sur test set accuracy max à 73%. Overfitting ? Ou plutôt jeu de test pas évident pour le modèle => tracé du pi2 montre bien que les médianes et les interquartiles se superposent, bien plus que les données d'entrainements. Pour info, le modèle du labo sur les données 2017 a obtenu des performances similaires sur ce jeu de test. 
+	- SR de 10 à 5m pas suffisant pour améliorer la détection, ou bien le modèle crée des artéfacts qui détériore la détection, essayer potentiellement d'autres modèles.
+	- face à ça, on a voulu savoir quelles catégories de peupliers étaient mal détectées => peupliers d'une certaine tranche d'âge, de certaines hauteurs, de certains cultivars, avec une certaine vitesse de croissance. A noter, qu'il y a surement des biais supplémentaire qui gêne la détection : rééchantillonnage artificiel de 20 à 10m des bandes B11 et B12, artefacts/distortions/bruits liés à l'imagerie satellite, ou tout simplement le biais de la représentation de données dont subit surement la tuile 4 (trainset pas représentatif de l'ensemble des peupleraies donc difficulté sur la tuile 4 => on a essayé d'entrainer sur 2 tuiles du trainset et prédire sur la 3eme, même performances au final => modèle a du mal à généraliser). 
+	
+VI - Les pistes d'améliorations
+	- On a fait la SFFS 2018, essayer de faire la SR avec les dates issues de cette SFFS voir si c'est mieux
+	- Pour la SR, développer d'autres modèles avec d'autres architectures, modèle transformers, CNN, ...
+	- Idem pour la classification, essayer avec un réseau de neurones convolutionnel voir si ça performe mieux
+	- Réfléchir encore à d'autres pistes...
+
+VII - Difficultés rencontrées
+	- Problème n°1 : limites matérielles, limites de mémoire et limites de ressources de calcul
+		- Pour faire la SR, 240 Go d'images à traiter + 96 Go d'images pour la classif, tout ça x2 car la SR, donc 336Gox2 = 672Go !!
+		- Sans la SR, juste avec la classif, mon dossier de travail fait 206 Go. 
+			- l'un de nous avait un PC fixe neuf donc on a pu avancer mais sinon avec les PCs portables, déjà pleins, c'était pas faisable. 
+		- Traiter des aussi grosses images demandent de la puissance de calcul => l'un de nous avait extrait un patch d'une image à 24 Go, ça a pris 1h. Les traitements sur Qgis prenaient beaucoup de temps aussi.
+		- Et effectuer une SFFS ou un RandomizedSearchCV, gourmand en calculs
+			- pareil, PC fixe avec processeur i7 et 32Go de RAM donc ça l'a fait en parallélisant les calculs...
+	- on a eu des difficultés à améliorer les performances des modèles RF car au début le jeu de test n'était pas encore complet, on était à 18% d'accuracy, mais au fil du projet on nous a fournit de nouvelles données, plus quali, plus représentatif de la tuile de test et l'accuracy est monté jusqu'à 73%. 
+
+VIII - Ressentits sur le projet - bilan
+	- Pour finir sur une note positive
+	- On a pu travailler sur un vrai cas pratique de classification sur image satellites, à quoi pouvait ressembler la chaîne de traitement, prise en main d'un indice particulier : le pi2
+	- On a appris des trucs sur les peupliers, et les difficultés liées à leurs détection
+	- Projet très enrichissant qui consitue une bonne base pour continuer dans l'imagerie satellite comme Auriane :)
